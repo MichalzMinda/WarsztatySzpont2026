@@ -13,7 +13,15 @@ const OCEAN_NEAR_CACHE_MS = 45000;
 const OCEAN_CODE = "??";
 const AUTO_REFRESH_MS = 2000;
 
+const CODEC_PRIORITY = { MP3: 0, AAC: 1, "AAC+": 2 };
+
 const populationFormatter = new Intl.NumberFormat("pl-PL");
+
+function sortStationsByCodec(stations) {
+  return [...stations].sort(
+    (left, right) => (CODEC_PRIORITY[left.codec] ?? 9) - (CODEC_PRIORITY[right.codec] ?? 9),
+  );
+}
 
 const mapCardEl = document.getElementById("map-card");
 const mapEl = document.getElementById("map");
@@ -34,6 +42,8 @@ let radioContextLabel = null;
 let oceanFallbackCountryCodes = [];
 let oceanFallbackCountryIndex = 0;
 let isOceanRadio = false;
+let autoplayBlocked = false;
+let pendingUserPlayback = false;
 let refreshTimeoutId = null;
 let isRefreshing = false;
 let map = null;
@@ -292,7 +302,9 @@ async function fetchRadioStations(countryCode) {
     throw new Error(`Radio Browser zwróciło błąd ${response.status}`);
   }
   const stations = await response.json();
-  return stations.filter((station) => PLAYABLE_CODECS.has(station.codec) && station.url_resolved);
+  return sortStationsByCodec(
+    stations.filter((station) => PLAYABLE_CODECS.has(station.codec) && station.url_resolved),
+  );
 }
 
 function flagUrl(countryCode) {
@@ -371,13 +383,58 @@ function renderRadioStation(stationName) {
   const contextHtml = radioContextLabel
     ? `<p class="radio-context">${radioContextLabel}</p>`
     : "";
+  const autoplayHtml = autoplayBlocked
+    ? `<p class="radio-autoplay-hint">Kliknij ▶ w odtwarzaczu, aby włączyć dźwięk.</p>`
+    : "";
   radioEl.innerHTML = `
     <h2>Radio</h2>
     ${contextHtml}
     <p>${stationName}</p>
+    ${autoplayHtml}
     <div class="radio-player"></div>
   `;
   radioEl.querySelector(".radio-player").appendChild(audioEl);
+}
+
+function updateAutoplayHint() {
+  const hintEl = radioEl.querySelector(".radio-autoplay-hint");
+  if (autoplayBlocked && !hintEl && radioEl.querySelector(".radio-player")) {
+    const hint = document.createElement("p");
+    hint.className = "radio-autoplay-hint";
+    hint.textContent = "Kliknij ▶ w odtwarzaczu, aby włączyć dźwięk.";
+    radioEl.querySelector(".radio-player").before(hint);
+  } else if (!autoplayBlocked && hintEl) {
+    hintEl.remove();
+  }
+}
+
+async function ensureRadioPlayback(fromUser = false) {
+  if (!audioEl.src) {
+    return false;
+  }
+
+  const userInitiated = fromUser || pendingUserPlayback;
+  pendingUserPlayback = false;
+
+  if (!audioEl.paused && !audioEl.ended) {
+    autoplayBlocked = false;
+    updateAutoplayHint();
+    return true;
+  }
+
+  try {
+    await audioEl.play();
+    autoplayBlocked = false;
+    updateAutoplayHint();
+    return true;
+  } catch {
+    autoplayBlocked = true;
+    updateAutoplayHint();
+    if (userInitiated) {
+      return false;
+    }
+    return false;
+  }
 }
 
 function stopRadio() {
@@ -437,14 +494,20 @@ function tryPlayStation(index) {
 
   radioErrorHandler = () => tryPlayStation(index + 1);
   audioEl.addEventListener("error", radioErrorHandler, { once: true });
-  audioEl.play().catch(() => {
-    // Browsers may block autoplay without a user gesture; keep the station loaded.
-  });
+  void ensureRadioPlayback(false);
+}
+
+async function resumeExistingRadio(userInitiated) {
+  radioEl.classList.remove("hidden");
+  updateAutoplayHint();
+  await ensureRadioPlayback(userInitiated);
 }
 
 async function loadRadio(countryCode, options = {}) {
   const playbackId = options.playbackId ?? `land:${countryCode}`;
+  const userInitiated = Boolean(options.userInitiated);
   if (playbackId === currentRadioPlaybackId && audioEl.src) {
+    await resumeExistingRadio(userInitiated);
     return;
   }
 
@@ -476,7 +539,9 @@ async function loadRadio(countryCode, options = {}) {
   }
 }
 
-async function loadOceanRadio(fallback) {
+async function loadOceanRadio(fallback, options = {}) {
+  const userInitiated = Boolean(options.userInitiated);
+
   if (fallback.source === "nearest") {
     const countryCodes = uniqueCountryCodesFromCities(fallback.cities);
     const countryName =
@@ -491,6 +556,7 @@ async function loadOceanRadio(fallback) {
 
     const playbackId = `ocean:${countryCodes.join(",")}`;
     if (playbackId === currentRadioPlaybackId && audioEl.src) {
+      await resumeExistingRadio(userInitiated);
       return;
     }
 
@@ -499,6 +565,7 @@ async function loadOceanRadio(fallback) {
       isOceanRadio: true,
       fallbackCountryCodes: countryCodes,
       radioContextLabel: `Radio z najbliższego kraju: ${countryName}`,
+      userInitiated,
     });
     return;
   }
@@ -508,6 +575,7 @@ async function loadOceanRadio(fallback) {
     renderOcean();
     const playbackId = `ocean-last:${fallback.countryCode}`;
     if (playbackId === currentRadioPlaybackId && audioEl.src) {
+      await resumeExistingRadio(userInitiated);
       return;
     }
 
@@ -516,11 +584,12 @@ async function loadOceanRadio(fallback) {
       isOceanRadio: true,
       fallbackCountryCodes: [fallback.countryCode],
       radioContextLabel: `Radio z ostatniego kraju nad lądem: ${countryName}`,
+      userInitiated,
     });
   }
 }
 
-async function loadCountryDetails(countryCode) {
+async function loadCountryDetails(countryCode, options = {}) {
   const capitalData = await fetchCountryCapital(countryCode);
   const [population, temperature] = await Promise.all([
     fetchCountryPopulation(capitalData.name),
@@ -535,7 +604,10 @@ async function loadCountryDetails(countryCode) {
     temperature,
   });
 
-  await loadRadio(countryCode, { playbackId: `land:${countryCode}` });
+  await loadRadio(countryCode, {
+    playbackId: `land:${countryCode}`,
+    userInitiated: Boolean(options.userInitiated),
+  });
 }
 
 function scheduleNextRefresh() {
@@ -545,7 +617,8 @@ function scheduleNextRefresh() {
   }, AUTO_REFRESH_MS);
 }
 
-async function refresh() {
+async function refresh(options = {}) {
+  const userInitiated = Boolean(options.userInitiated);
   if (isRefreshing) {
     scheduleNextRefresh();
     return;
@@ -570,7 +643,7 @@ async function refresh() {
       try {
         const fallback = await resolveOceanFallback(iss.latitude, iss.longitude);
         if (fallback) {
-          await loadOceanRadio(fallback);
+          await loadOceanRadio(fallback, { userInitiated });
         } else {
           currentRadioPlaybackId = null;
           hideRadioCard();
@@ -590,7 +663,7 @@ async function refresh() {
 
     try {
       renderMap(iss, `ISS nad krajem ${countryCode}`);
-      await loadCountryDetails(countryCode);
+      await loadCountryDetails(countryCode, { userInitiated });
     } catch (error) {
       showCountryError(error.message || "Nie udało się pobrać informacji o kraju.");
       hideRadioCard();
@@ -608,8 +681,24 @@ async function refresh() {
 }
 
 audioEl.controls = true;
+audioEl.preload = "none";
+audioEl.addEventListener("playing", () => {
+  autoplayBlocked = false;
+  updateAutoplayHint();
+});
+
 refreshBtn.addEventListener("click", () => {
+  pendingUserPlayback = true;
+  if (audioEl.src) {
+    void audioEl.play().then(() => {
+      autoplayBlocked = false;
+      updateAutoplayHint();
+    }).catch(() => {
+      autoplayBlocked = true;
+      updateAutoplayHint();
+    });
+  }
   window.clearTimeout(refreshTimeoutId);
-  refresh();
+  void refresh({ userInitiated: true });
 });
 refresh();

@@ -157,7 +157,8 @@ dd {
 }
 
 .radio-context,
-.ocean-nearest {
+.ocean-nearest,
+.radio-autoplay-hint {
   color: #9aa8c7;
   font-size: 0.95rem;
   margin: 0 0 0.5rem;
