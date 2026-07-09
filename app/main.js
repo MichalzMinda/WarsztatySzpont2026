@@ -8,6 +8,7 @@ const RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json/stations/byco
 const PLAYABLE_CODECS = new Set(["MP3", "AAC", "AAC+"]);
 const MAX_RADIO_ATTEMPTS = 3;
 const OCEAN_CODE = "??";
+const AUTO_REFRESH_MS = 2000;
 
 const populationFormatter = new Intl.NumberFormat("pl-PL");
 
@@ -20,6 +21,8 @@ const audioEl = document.createElement("audio");
 let currentCountryCode = null;
 let radioStations = [];
 let radioErrorHandler = null;
+let refreshTimeoutId = null;
+let isRefreshing = false;
 
 function showIssError(message) {
   statusEl.className = "card error";
@@ -46,7 +49,10 @@ function hideRadioCard() {
 }
 
 async function fetchIssPosition() {
-  const response = await fetch(ISS_API);
+  const url = new URL(ISS_API);
+  url.searchParams.set("t", Date.now().toString());
+
+  const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`ISS API zwróciło błąd ${response.status}`);
   }
@@ -139,6 +145,10 @@ function flagUrl(countryCode) {
 }
 
 function renderIss(iss) {
+  const measuredAt = iss.timestamp
+    ? new Date(iss.timestamp * 1000).toLocaleTimeString("pl-PL")
+    : "brak danych";
+
   statusEl.className = "card";
   statusEl.innerHTML = `
     <h2>Pozycja ISS</h2>
@@ -147,6 +157,7 @@ function renderIss(iss) {
       <dt>Długość</dt><dd>${iss.longitude.toFixed(4)}°</dd>
       <dt>Wysokość</dt><dd>${Math.round(iss.altitude)} km</dd>
       <dt>Prędkość</dt><dd>${Math.round(iss.velocity)} km/h</dd>
+      <dt>Pomiar</dt><dd>${measuredAt}</dd>
     </dl>
   `;
 }
@@ -268,7 +279,20 @@ async function loadCountryDetails(countryCode) {
   await loadRadio(countryCode);
 }
 
+function scheduleNextRefresh() {
+  window.clearTimeout(refreshTimeoutId);
+  refreshTimeoutId = window.setTimeout(() => {
+    refresh();
+  }, AUTO_REFRESH_MS);
+}
+
 async function refresh() {
+  if (isRefreshing) {
+    scheduleNextRefresh();
+    return;
+  }
+
+  isRefreshing = true;
   refreshBtn.disabled = true;
   statusEl.className = "card";
   statusEl.textContent = "Ładowanie pozycji ISS…";
@@ -298,10 +322,15 @@ async function refresh() {
     hideCountryCard();
     hideRadioCard();
   } finally {
+    isRefreshing = false;
     refreshBtn.disabled = false;
+    scheduleNextRefresh();
   }
 }
 
 audioEl.controls = true;
-refreshBtn.addEventListener("click", refresh);
+refreshBtn.addEventListener("click", () => {
+  window.clearTimeout(refreshTimeoutId);
+  refresh();
+});
 refresh();
