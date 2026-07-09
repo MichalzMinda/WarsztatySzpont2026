@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ISS Country Tracker</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>ISS Country Tracker</h1>
+      <p class="subtitle">Gdzie teraz leci Międzynarodowa Stacja Kosmiczna?</p>
+
+      <section id="status" class="card" aria-live="polite">Ładowanie pozycji ISS…</section>
+
+      <section id="country" class="card hidden" aria-live="polite"></section>
+
+      <section id="radio" class="card hidden" aria-live="polite"></section>
+
+      <button id="refresh" type="button">Odśwież</button>
+    </main>
+    <script src="main.js"></script>
+  </body>
+</html>

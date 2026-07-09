@@ -1,0 +1,114 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0b1020;
+  color: #e8ecf4;
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+main {
+  width: min(560px, 100%);
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.subtitle {
+  margin: 0 0 1.5rem;
+  color: #9aa8c7;
+}
+
+.card {
+  background: #151d33;
+  border: 1px solid #243055;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  line-height: 1.6;
+}
+
+.card.error {
+  border-color: #8b3a3a;
+  color: #ffb4b4;
+}
+
+.card.muted {
+  color: #9aa8c7;
+}
+
+.hidden {
+  display: none;
+}
+
+button {
+  background: #3d6ef5;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #2f5ad4;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 1rem;
+}
+
+dt {
+  color: #9aa8c7;
+}
+
+dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.country-flag {
+  display: block;
+  width: 160px;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin-bottom: 0.75rem;
+  border: 1px solid #243055;
+}
+
+.radio-player {
+  margin-top: 0.5rem;
+}
+
+.radio-player audio {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.radio-unavailable {
+  margin: 0;
+  color: #9aa8c7;
+}
