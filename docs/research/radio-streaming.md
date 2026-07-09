@@ -11,7 +11,7 @@
 
 ### Przepływ
 
-1. `country_code` z WTIA (np. `PL`) — gdy `??`, pominąć radio.
+1. `country_code` z WTIA (np. `PL`) — gdy `??`, rozwiązać kraj zastępczy przez countries.dev `/cities/near` (patrz [ocean-radio-fallback.md](./ocean-radio-fallback.md)).
 2. `GET https://de1.api.radio-browser.info/json/stations/bycountrycodeexact/{code}?limit=10&order=clickcount&reverse=true`
    - Nagłówek `User-Agent: ISS-Country-Tracker/1.0` (wymagany przez API).
 3. Z listy wybrać pierwszą stację z `codec` ∈ `MP3`, `AAC`, `AAC+` (unikać HLS/M3U8 na MVP — wymaga `hls.js`).
@@ -71,7 +71,7 @@ Część streamów to `http://…` (np. polskieradio.pl). Przy lokalnym dev (`ht
 
 | Sytuacja | UI |
 |----------|-----|
-| `country_code === "??"` | Brak sekcji radia (jak „Nad oceanem”) |
+| `country_code === "??"` | Radio z najbliższego kraju (countries.dev); etykieta „Radio z najbliższego kraju: …” |
 | Brak stacji w API | „Brak dostępnej stacji radiowej” |
 | Stream nie startuje | Próba kolejnej stacji; potem komunikat jak wyżej |
 | Stream działa | `<audio controls>` + nazwa stacji |

@@ -63,7 +63,7 @@ Gdy `country_code === "??"` (WTIA) lub brak kodu kraju:
 
 - Wyświetlić: **„Nad oceanem”** (lub „Poza terytorium kraju”)
 - Nie traktować jako błąd API
-- Nie odtwarzać radia (logika w osobnym tickecie)
+- Radio z kraju zastępczego — patrz [ocean-radio-fallback.md](./ocean-radio-fallback.md)
 
 ## Implikacje dla `app/main.js`
 

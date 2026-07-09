@@ -5,8 +5,11 @@ const COUNTRIES_NOW_API = "https://countriesnow.space/api/v0.1/countries";
 const OPEN_METEO_GEO_API = "https://geocoding-api.open-meteo.com/v1/search";
 const OPEN_METEO_FORECAST_API = "https://api.open-meteo.com/v1/forecast";
 const RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json/stations/bycountrycodeexact";
+const COUNTRIES_DEV_NEAR_API = "https://countries.dev/cities/near";
 const PLAYABLE_CODECS = new Set(["MP3", "AAC", "AAC+"]);
 const MAX_RADIO_ATTEMPTS = 3;
+const MAX_OCEAN_FALLBACK_COUNTRIES = 3;
+const OCEAN_NEAR_CACHE_MS = 45000;
 const OCEAN_CODE = "??";
 const AUTO_REFRESH_MS = 2000;
 
@@ -22,8 +25,15 @@ const refreshBtn = document.getElementById("refresh");
 const audioEl = document.createElement("audio");
 
 let currentCountryCode = null;
+let currentRadioPlaybackId = null;
+let lastLandCountryCode = null;
+let oceanNearCache = null;
 let radioStations = [];
 let radioErrorHandler = null;
+let radioContextLabel = null;
+let oceanFallbackCountryCodes = [];
+let oceanFallbackCountryIndex = 0;
+let isOceanRadio = false;
 let refreshTimeoutId = null;
 let isRefreshing = false;
 let map = null;
@@ -144,6 +154,75 @@ async function fetchCountryCode(latitude, longitude) {
   return data.country_code;
 }
 
+function cacheKeyForCoords(latitude, longitude) {
+  return `${latitude.toFixed(1)},${longitude.toFixed(1)}`;
+}
+
+async function fetchNearestCities(latitude, longitude) {
+  const key = cacheKeyForCoords(latitude, longitude);
+  const now = Date.now();
+  if (oceanNearCache?.key === key && oceanNearCache.expiresAt > now) {
+    return oceanNearCache.cities;
+  }
+
+  const url = new URL(COUNTRIES_DEV_NEAR_API);
+  url.searchParams.set("lat", latitude.toString());
+  url.searchParams.set("lng", longitude.toString());
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`countries.dev zwróciło błąd ${response.status}`);
+  }
+
+  const cities = await response.json();
+  if (!Array.isArray(cities)) {
+    throw new Error("countries.dev zwróciło nieoczekiwany format odpowiedzi.");
+  }
+
+  oceanNearCache = { key, cities, expiresAt: now + OCEAN_NEAR_CACHE_MS };
+  return cities;
+}
+
+function uniqueCountryCodesFromCities(cities, maxCountries = MAX_OCEAN_FALLBACK_COUNTRIES) {
+  const codes = [];
+  for (const city of cities) {
+    if (!city.countryCode || codes.includes(city.countryCode)) {
+      continue;
+    }
+    codes.push(city.countryCode);
+    if (codes.length >= maxCountries) {
+      break;
+    }
+  }
+  return codes;
+}
+
+async function resolveOceanFallback(latitude, longitude) {
+  try {
+    const cities = await fetchNearestCities(latitude, longitude);
+    if (cities.length > 0) {
+      return { source: "nearest", cities, nearest: cities[0] };
+    }
+  } catch {
+    // Fall through to last known land country.
+  }
+
+  if (lastLandCountryCode) {
+    return { source: "last-land", countryCode: lastLandCountryCode };
+  }
+
+  return null;
+}
+
+async function fetchCountryName(iso2) {
+  try {
+    const data = await fetchCountryCapital(iso2);
+    return data.name;
+  } catch {
+    return iso2;
+  }
+}
+
 async function fetchCountryCapital(iso2) {
   const response = await fetch(`${COUNTRIES_NOW_API}/capital/q?iso2=${encodeURIComponent(iso2)}`);
   if (!response.ok) {
@@ -238,12 +317,22 @@ function renderIss(iss) {
   `;
 }
 
-function renderOcean() {
+function renderOcean(nearestContext) {
   countryEl.className = "card muted";
   countryEl.classList.remove("hidden");
+
+  let nearestHtml = "";
+  if (nearestContext?.nearest) {
+    const countryLabel = nearestContext.countryName || nearestContext.nearest.countryCode;
+    nearestHtml = `
+      <p class="ocean-nearest">Najbliższy ląd: ${nearestContext.nearest.name}, ${countryLabel} (~${Math.round(nearestContext.nearest.distanceKm)} km)</p>
+    `;
+  }
+
   countryEl.innerHTML = `
     <h2>Kraj pod ISS</h2>
     <p>Nad oceanem</p>
+    ${nearestHtml}
   `;
 }
 
@@ -266,8 +355,12 @@ function renderCountry({ countryCode, name, capital, population, temperature }) 
 function renderRadioUnavailable() {
   radioEl.className = "card";
   radioEl.classList.remove("hidden");
+  const contextHtml = radioContextLabel
+    ? `<p class="radio-context">${radioContextLabel}</p>`
+    : "";
   radioEl.innerHTML = `
     <h2>Radio</h2>
+    ${contextHtml}
     <p class="radio-unavailable">Brak dostępnej stacji radiowej</p>
   `;
 }
@@ -275,8 +368,12 @@ function renderRadioUnavailable() {
 function renderRadioStation(stationName) {
   radioEl.className = "card";
   radioEl.classList.remove("hidden");
+  const contextHtml = radioContextLabel
+    ? `<p class="radio-context">${radioContextLabel}</p>`
+    : "";
   radioEl.innerHTML = `
     <h2>Radio</h2>
+    ${contextHtml}
     <p>${stationName}</p>
     <div class="radio-player"></div>
   `;
@@ -292,10 +389,40 @@ function stopRadio() {
   audioEl.removeAttribute("src");
   audioEl.load();
   radioStations = [];
+  isOceanRadio = false;
+  oceanFallbackCountryCodes = [];
+  oceanFallbackCountryIndex = 0;
+  radioContextLabel = null;
+}
+
+async function tryNextOceanCountry() {
+  oceanFallbackCountryIndex += 1;
+  if (oceanFallbackCountryIndex >= oceanFallbackCountryCodes.length) {
+    renderRadioUnavailable();
+    return;
+  }
+
+  const countryCode = oceanFallbackCountryCodes[oceanFallbackCountryIndex];
+  currentCountryCode = countryCode;
+
+  try {
+    radioStations = await fetchRadioStations(countryCode);
+    if (radioStations.length === 0) {
+      await tryNextOceanCountry();
+      return;
+    }
+    tryPlayStation(0);
+  } catch {
+    await tryNextOceanCountry();
+  }
 }
 
 function tryPlayStation(index) {
   if (index >= MAX_RADIO_ATTEMPTS || index >= radioStations.length) {
+    if (isOceanRadio) {
+      void tryNextOceanCountry();
+      return;
+    }
     renderRadioUnavailable();
     return;
   }
@@ -315,25 +442,81 @@ function tryPlayStation(index) {
   });
 }
 
-async function loadRadio(countryCode) {
-  if (countryCode === currentCountryCode && audioEl.src) {
+async function loadRadio(countryCode, options = {}) {
+  const playbackId = options.playbackId ?? `land:${countryCode}`;
+  if (playbackId === currentRadioPlaybackId && audioEl.src) {
     return;
   }
 
-  if (countryCode !== currentCountryCode) {
-    stopRadio();
-    currentCountryCode = countryCode;
-  }
+  stopRadio();
+  currentRadioPlaybackId = playbackId;
+  currentCountryCode = countryCode;
+  isOceanRadio = Boolean(options.isOceanRadio);
+  oceanFallbackCountryCodes = options.fallbackCountryCodes ?? [];
+  oceanFallbackCountryIndex = 0;
+  radioContextLabel = options.radioContextLabel ?? null;
 
   try {
     radioStations = await fetchRadioStations(countryCode);
     if (radioStations.length === 0) {
+      if (isOceanRadio) {
+        await tryNextOceanCountry();
+        return;
+      }
       renderRadioUnavailable();
       return;
     }
     tryPlayStation(0);
   } catch {
+    if (isOceanRadio) {
+      await tryNextOceanCountry();
+      return;
+    }
     renderRadioUnavailable();
+  }
+}
+
+async function loadOceanRadio(fallback) {
+  if (fallback.source === "nearest") {
+    const countryCodes = uniqueCountryCodesFromCities(fallback.cities);
+    const countryName =
+      countryCodes.length > 0 ? await fetchCountryName(countryCodes[0]) : fallback.nearest.countryCode;
+    renderOcean({ nearest: fallback.nearest, countryName });
+
+    if (countryCodes.length === 0) {
+      currentRadioPlaybackId = null;
+      renderRadioUnavailable();
+      return;
+    }
+
+    const playbackId = `ocean:${countryCodes.join(",")}`;
+    if (playbackId === currentRadioPlaybackId && audioEl.src) {
+      return;
+    }
+
+    await loadRadio(countryCodes[0], {
+      playbackId,
+      isOceanRadio: true,
+      fallbackCountryCodes: countryCodes,
+      radioContextLabel: `Radio z najbliższego kraju: ${countryName}`,
+    });
+    return;
+  }
+
+  if (fallback.source === "last-land") {
+    const countryName = await fetchCountryName(fallback.countryCode);
+    renderOcean();
+    const playbackId = `ocean-last:${fallback.countryCode}`;
+    if (playbackId === currentRadioPlaybackId && audioEl.src) {
+      return;
+    }
+
+    await loadRadio(fallback.countryCode, {
+      playbackId,
+      isOceanRadio: true,
+      fallbackCountryCodes: [fallback.countryCode],
+      radioContextLabel: `Radio z ostatniego kraju nad lądem: ${countryName}`,
+    });
   }
 }
 
@@ -352,7 +535,7 @@ async function loadCountryDetails(countryCode) {
     temperature,
   });
 
-  await loadRadio(countryCode);
+  await loadRadio(countryCode, { playbackId: `land:${countryCode}` });
 }
 
 function scheduleNextRefresh() {
@@ -373,8 +556,6 @@ async function refresh() {
   renderMapLoading();
   statusEl.className = "card";
   statusEl.textContent = "Ładowanie pozycji ISS…";
-  hideCountryCard();
-  hideRadioCard();
 
   try {
     const iss = await fetchIssPosition();
@@ -385,10 +566,27 @@ async function refresh() {
     if (countryCode === OCEAN_CODE) {
       renderMap(iss, "ISS nad oceanem");
       currentCountryCode = null;
-      hideRadioCard();
-      renderOcean();
+
+      try {
+        const fallback = await resolveOceanFallback(iss.latitude, iss.longitude);
+        if (fallback) {
+          await loadOceanRadio(fallback);
+        } else {
+          currentRadioPlaybackId = null;
+          hideRadioCard();
+          renderOcean();
+        }
+      } catch {
+        currentRadioPlaybackId = null;
+        hideRadioCard();
+        renderOcean();
+        renderRadioUnavailable();
+      }
       return;
     }
+
+    lastLandCountryCode = countryCode;
+    hideCountryCard();
 
     try {
       renderMap(iss, `ISS nad krajem ${countryCode}`);
