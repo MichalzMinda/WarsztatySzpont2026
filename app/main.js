@@ -223,7 +223,9 @@ function tryPlayStation(index) {
 
   radioErrorHandler = () => tryPlayStation(index + 1);
   audioEl.addEventListener("error", radioErrorHandler, { once: true });
-  audioEl.play().catch(() => tryPlayStation(index + 1));
+  audioEl.play().catch(() => {
+    // Browsers may block autoplay without a user gesture; keep the station loaded.
+  });
 }
 
 async function loadRadio(countryCode) {
