@@ -1,3 +1,6 @@
+# iss_country_temperature_tracker
+This application shows information about live position of international space station (above which country it is currently) and returns information about the country and plays radio station from this country on WEB.
+
 ## Agent skills
 
 ### Issue tracker
