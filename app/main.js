@@ -12,6 +12,9 @@ const AUTO_REFRESH_MS = 2000;
 
 const populationFormatter = new Intl.NumberFormat("pl-PL");
 
+const mapCardEl = document.getElementById("map-card");
+const mapEl = document.getElementById("map");
+const mapStatusEl = document.getElementById("map-status");
 const statusEl = document.getElementById("status");
 const countryEl = document.getElementById("country");
 const radioEl = document.getElementById("radio");
@@ -23,6 +26,79 @@ let radioStations = [];
 let radioErrorHandler = null;
 let refreshTimeoutId = null;
 let isRefreshing = false;
+let map = null;
+let issMarker = null;
+
+function setMapStatus(message) {
+  mapStatusEl.textContent = message;
+}
+
+function showMapError(message) {
+  mapCardEl.classList.add("error");
+  mapEl.classList.add("map-error");
+  mapEl.textContent = message;
+  setMapStatus("Mapa niedostępna");
+}
+
+function resetMapError() {
+  mapCardEl.classList.remove("error");
+  mapEl.classList.remove("map-error");
+  if (!map) {
+    mapEl.textContent = "";
+  }
+}
+
+function ensureMap() {
+  if (map) {
+    return map;
+  }
+
+  if (typeof window.L === "undefined") {
+    throw new Error("Nie udało się załadować biblioteki mapy.");
+  }
+
+  resetMapError();
+
+  map = window.L.map(mapEl, {
+    worldCopyJump: true,
+    zoomControl: true,
+    attributionControl: true,
+  }).setView([0, 0], 2);
+
+  window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    minZoom: 1,
+    maxZoom: 6,
+  }).addTo(map);
+
+  issMarker = window.L.marker([0, 0]).addTo(map);
+  issMarker.bindTooltip("ISS", {
+    direction: "top",
+    offset: [0, -12],
+  });
+
+  window.setTimeout(() => {
+    map.invalidateSize();
+  }, 0);
+
+  return map;
+}
+
+function renderMapLoading() {
+  resetMapError();
+  setMapStatus("Ładowanie pozycji ISS…");
+}
+
+function renderMap(iss, locationLabel) {
+  const activeMap = ensureMap();
+  const latLng = [iss.latitude, iss.longitude];
+
+  resetMapError();
+  activeMap.setView(latLng, 3);
+  issMarker.setLatLng(latLng);
+  issMarker.setTooltipContent(locationLabel);
+  setMapStatus(locationLabel);
+}
 
 function showIssError(message) {
   statusEl.className = "card error";
@@ -294,9 +370,11 @@ async function refresh() {
 
   isRefreshing = true;
   refreshBtn.disabled = true;
+  renderMapLoading();
   statusEl.className = "card";
   statusEl.textContent = "Ładowanie pozycji ISS…";
   hideCountryCard();
+  hideRadioCard();
 
   try {
     const iss = await fetchIssPosition();
@@ -305,6 +383,7 @@ async function refresh() {
     const countryCode = await fetchCountryCode(iss.latitude, iss.longitude);
 
     if (countryCode === OCEAN_CODE) {
+      renderMap(iss, "ISS nad oceanem");
       currentCountryCode = null;
       hideRadioCard();
       renderOcean();
@@ -312,12 +391,14 @@ async function refresh() {
     }
 
     try {
+      renderMap(iss, `ISS nad krajem ${countryCode}`);
       await loadCountryDetails(countryCode);
     } catch (error) {
       showCountryError(error.message || "Nie udało się pobrać informacji o kraju.");
       hideRadioCard();
     }
   } catch (error) {
+    showMapError(error.message || "Nie udało się pobrać danych mapy.");
     showIssError(error.message || "Nie udało się pobrać danych.");
     hideCountryCard();
     hideRadioCard();

@@ -4,12 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ISS Country Tracker</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main>
       <h1>ISS Country Tracker</h1>
       <p class="subtitle">Gdzie teraz leci Międzynarodowa Stacja Kosmiczna?</p>
+
+      <section id="map-card" class="card" aria-live="polite">
+        <div class="map-header">
+          <h2>Mapa ISS</h2>
+          <p id="map-status" class="map-status">Ładowanie mapy…</p>
+        </div>
+        <div id="map" class="map-canvas" role="img" aria-label="Mapa pokazująca aktualną pozycję ISS"></div>
+      </section>
 
       <section id="status" class="card" aria-live="polite">Ładowanie pozycji ISS…</section>
 
@@ -19,6 +33,11 @@
 
       <button id="refresh" type="button">Odśwież</button>
     </main>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
     <script src="main.js"></script>
   </body>
 </html>

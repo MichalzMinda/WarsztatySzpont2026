@@ -17,6 +17,12 @@ main {
   width: min(560px, 100%);
 }
 
+@media (min-width: 960px) {
+  main {
+    width: min(860px, 100%);
+  }
+}
+
 h1 {
   margin: 0 0 0.25rem;
   font-size: 1.75rem;
@@ -48,6 +54,43 @@ h2 {
 
 .card.muted {
   color: #9aa8c7;
+}
+
+.map-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.map-status {
+  margin: 0;
+  color: #9aa8c7;
+  font-size: 0.95rem;
+}
+
+.map-canvas {
+  width: 100%;
+  height: 360px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #243055;
+  background: #0e162c;
+}
+
+.map-canvas.map-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: #ffb4b4;
+  text-align: center;
+}
+
+.leaflet-container {
+  background: #0e162c;
+  font: inherit;
 }
 
 .hidden {
