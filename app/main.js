@@ -10,8 +10,12 @@ const PLAYABLE_CODECS = new Set(["MP3", "AAC", "AAC+"]);
 const MAX_RADIO_ATTEMPTS = 3;
 const MAX_OCEAN_FALLBACK_COUNTRIES = 3;
 const OCEAN_NEAR_CACHE_MS = 45000;
+const WTIA_COORDS_CACHE_MS = 60000;
+const COUNTRY_DETAILS_CACHE_MS = 300000;
 const OCEAN_CODE = "??";
-const AUTO_REFRESH_MS = 2000;
+const AUTO_REFRESH_MS = 5000;
+const MIN_REFRESH_MS = 5000;
+const MAX_REFRESH_MS = 60000;
 
 const CODEC_PRIORITY = { MP3: 0, AAC: 1, "AAC+": 2 };
 
@@ -45,7 +49,13 @@ let isOceanRadio = false;
 let autoplayBlocked = false;
 let pendingUserPlayback = false;
 let refreshTimeoutId = null;
+let refreshIntervalMs = AUTO_REFRESH_MS;
 let isRefreshing = false;
+let isInitialLoad = true;
+let lastGeoCountryCode = null;
+let lastOceanNearestKey = null;
+let wtiaCoordsCache = null;
+let countryDetailsCache = new Map();
 let map = null;
 let issMarker = null;
 
@@ -106,10 +116,12 @@ function ensureMap() {
 
 function renderMapLoading() {
   resetMapError();
-  setMapStatus("Ładowanie pozycji ISS…");
+  if (isInitialLoad) {
+    setMapStatus("Ładowanie pozycji ISS…");
+  }
 }
 
-function renderMap(iss, locationLabel) {
+function updateMap(iss, locationLabel) {
   const activeMap = ensureMap();
   const latLng = [iss.latitude, iss.longitude];
 
@@ -117,7 +129,9 @@ function renderMap(iss, locationLabel) {
   activeMap.setView(latLng, 3);
   issMarker.setLatLng(latLng);
   issMarker.setTooltipContent(locationLabel);
-  setMapStatus(locationLabel);
+  if (mapStatusEl.textContent !== locationLabel) {
+    setMapStatus(locationLabel);
+  }
 }
 
 function showIssError(message) {
@@ -149,14 +163,27 @@ async function fetchIssPosition() {
   url.searchParams.set("t", Date.now().toString());
 
   const response = await fetch(url, { cache: "no-store" });
+  if (response.status === 429) {
+    throw new RateLimitError("ISS API zwróciło błąd 429 — zbyt wiele zapytań.");
+  }
   if (!response.ok) {
     throw new Error(`ISS API zwróciło błąd ${response.status}`);
   }
   return response.json();
 }
 
+class RateLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RateLimitError";
+  }
+}
+
 async function fetchCountryCode(latitude, longitude) {
   const response = await fetch(`${WTIA_COORDS_API}/${latitude},${longitude}`);
+  if (response.status === 429) {
+    throw new RateLimitError("WTIA coordinates zwróciło błąd 429 — zbyt wiele zapytań.");
+  }
   if (!response.ok) {
     throw new Error(`WTIA coordinates zwróciło błąd ${response.status}`);
   }
@@ -164,8 +191,29 @@ async function fetchCountryCode(latitude, longitude) {
   return data.country_code;
 }
 
+async function fetchCountryCodeCached(latitude, longitude) {
+  const key = cacheKeyForCoords(latitude, longitude);
+  const now = Date.now();
+  if (wtiaCoordsCache?.key === key && wtiaCoordsCache.expiresAt > now) {
+    return wtiaCoordsCache.countryCode;
+  }
+
+  // WTIA allows ~1 req/s — pause after the ISS request before coordinates.
+  await delay(1100);
+
+  const countryCode = await fetchCountryCode(latitude, longitude);
+  wtiaCoordsCache = { key, countryCode, expiresAt: now + WTIA_COORDS_CACHE_MS };
+  return countryCode;
+}
+
 function cacheKeyForCoords(latitude, longitude) {
   return `${latitude.toFixed(1)},${longitude.toFixed(1)}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 async function fetchNearestCities(latitude, longitude) {
@@ -311,25 +359,53 @@ function flagUrl(countryCode) {
   return `https://flagcdn.com/w320/${countryCode.toLowerCase()}.png`;
 }
 
-function renderIss(iss) {
-  const measuredAt = iss.timestamp
-    ? new Date(iss.timestamp * 1000).toLocaleTimeString("pl-PL")
-    : "brak danych";
+function ensureIssCard() {
+  if (statusEl.querySelector("#iss-latitude")) {
+    return;
+  }
 
   statusEl.className = "card";
   statusEl.innerHTML = `
     <h2>Pozycja ISS</h2>
     <dl>
-      <dt>Szerokość</dt><dd>${iss.latitude.toFixed(4)}°</dd>
-      <dt>Długość</dt><dd>${iss.longitude.toFixed(4)}°</dd>
-      <dt>Wysokość</dt><dd>${Math.round(iss.altitude)} km</dd>
-      <dt>Prędkość</dt><dd>${Math.round(iss.velocity)} km/h</dd>
-      <dt>Pomiar</dt><dd>${measuredAt}</dd>
+      <dt>Szerokość</dt><dd id="iss-latitude"></dd>
+      <dt>Długość</dt><dd id="iss-longitude"></dd>
+      <dt>Wysokość</dt><dd id="iss-altitude"></dd>
+      <dt>Prędkość</dt><dd id="iss-velocity"></dd>
+      <dt>Pomiar</dt><dd id="iss-measured-at"></dd>
     </dl>
   `;
 }
 
+function updateIssCard(iss) {
+  ensureIssCard();
+  statusEl.className = "card";
+
+  const measuredAt = iss.timestamp
+    ? new Date(iss.timestamp * 1000).toLocaleTimeString("pl-PL")
+    : "brak danych";
+
+  statusEl.querySelector("#iss-latitude").textContent = `${iss.latitude.toFixed(4)}°`;
+  statusEl.querySelector("#iss-longitude").textContent = `${iss.longitude.toFixed(4)}°`;
+  statusEl.querySelector("#iss-altitude").textContent = `${Math.round(iss.altitude)} km`;
+  statusEl.querySelector("#iss-velocity").textContent = `${Math.round(iss.velocity)} km/h`;
+  statusEl.querySelector("#iss-measured-at").textContent = measuredAt;
+}
+
 function renderOcean(nearestContext) {
+  const nearestKey = nearestContext?.nearest
+    ? `${nearestContext.nearest.name}:${nearestContext.countryName || nearestContext.nearest.countryCode}:${Math.round(nearestContext.nearest.distanceKm)}`
+    : "";
+  if (
+    countryEl.dataset.view === "ocean" &&
+    countryEl.dataset.nearestKey === nearestKey &&
+    !countryEl.classList.contains("hidden")
+  ) {
+    return;
+  }
+
+  countryEl.dataset.view = "ocean";
+  countryEl.dataset.nearestKey = nearestKey;
   countryEl.className = "card muted";
   countryEl.classList.remove("hidden");
 
@@ -349,6 +425,17 @@ function renderOcean(nearestContext) {
 }
 
 function renderCountry({ countryCode, name, capital, population, temperature }) {
+  const snapshot = `${countryCode}:${name}:${capital}:${population}:${Math.round(temperature)}`;
+  if (
+    countryEl.dataset.view === "land" &&
+    countryEl.dataset.snapshot === snapshot &&
+    !countryEl.classList.contains("hidden")
+  ) {
+    return;
+  }
+
+  countryEl.dataset.view = "land";
+  countryEl.dataset.snapshot = snapshot;
   countryEl.className = "card";
   countryEl.classList.remove("hidden");
   countryEl.innerHTML = `
@@ -590,19 +677,31 @@ async function loadOceanRadio(fallback, options = {}) {
 }
 
 async function loadCountryDetails(countryCode, options = {}) {
-  const capitalData = await fetchCountryCapital(countryCode);
-  const [population, temperature] = await Promise.all([
-    fetchCountryPopulation(capitalData.name),
-    fetchCapitalTemperature(capitalData.capital, countryCode),
-  ]);
+  const force = Boolean(options.force);
+  const now = Date.now();
+  const cached = countryDetailsCache.get(countryCode);
+  let details = cached && cached.expiresAt > now && !force ? cached.data : null;
 
-  renderCountry({
-    countryCode,
-    name: capitalData.name,
-    capital: capitalData.capital,
-    population,
-    temperature,
-  });
+  if (!details) {
+    const capitalData = await fetchCountryCapital(countryCode);
+    const [population, temperature] = await Promise.all([
+      fetchCountryPopulation(capitalData.name),
+      fetchCapitalTemperature(capitalData.capital, countryCode),
+    ]);
+    details = {
+      countryCode,
+      name: capitalData.name,
+      capital: capitalData.capital,
+      population,
+      temperature,
+    };
+    countryDetailsCache.set(countryCode, {
+      data: details,
+      expiresAt: now + COUNTRY_DETAILS_CACHE_MS,
+    });
+  }
+
+  renderCountry(details);
 
   await loadRadio(countryCode, {
     playbackId: `land:${countryCode}`,
@@ -610,11 +709,19 @@ async function loadCountryDetails(countryCode, options = {}) {
   });
 }
 
+function increaseRefreshBackoff() {
+  refreshIntervalMs = Math.min(refreshIntervalMs * 2, MAX_REFRESH_MS);
+}
+
+function resetRefreshBackoff() {
+  refreshIntervalMs = AUTO_REFRESH_MS;
+}
+
 function scheduleNextRefresh() {
   window.clearTimeout(refreshTimeoutId);
   refreshTimeoutId = window.setTimeout(() => {
     refresh();
-  }, AUTO_REFRESH_MS);
+  }, refreshIntervalMs);
 }
 
 async function refresh(options = {}) {
@@ -625,20 +732,37 @@ async function refresh(options = {}) {
   }
 
   isRefreshing = true;
-  refreshBtn.disabled = true;
-  renderMapLoading();
-  statusEl.className = "card";
-  statusEl.textContent = "Ładowanie pozycji ISS…";
+  if (isInitialLoad) {
+    refreshBtn.disabled = true;
+    statusEl.className = "card";
+    statusEl.textContent = "Ładowanie pozycji ISS…";
+    renderMapLoading();
+  }
 
   try {
     const iss = await fetchIssPosition();
-    renderIss(iss);
+    updateIssCard(iss);
+    resetRefreshBackoff();
 
-    const countryCode = await fetchCountryCode(iss.latitude, iss.longitude);
+    const coordKey = cacheKeyForCoords(iss.latitude, iss.longitude);
+    const countryCode = await fetchCountryCodeCached(iss.latitude, iss.longitude);
+    const geoChanged = countryCode !== lastGeoCountryCode;
+    lastGeoCountryCode = countryCode;
 
     if (countryCode === OCEAN_CODE) {
-      renderMap(iss, "ISS nad oceanem");
+      updateMap(iss, "ISS nad oceanem");
       currentCountryCode = null;
+
+      const oceanContextChanged = coordKey !== lastOceanNearestKey;
+
+      if (!geoChanged && !oceanContextChanged && !userInitiated) {
+        if (currentRadioPlaybackId && audioEl.src) {
+          await resumeExistingRadio(false);
+        }
+        return;
+      }
+
+      lastOceanNearestKey = coordKey;
 
       try {
         const fallback = await resolveOceanFallback(iss.latitude, iss.longitude);
@@ -658,23 +782,35 @@ async function refresh(options = {}) {
       return;
     }
 
+    lastOceanNearestKey = null;
     lastLandCountryCode = countryCode;
-    hideCountryCard();
+    updateMap(iss, `ISS nad krajem ${countryCode}`);
+
+    if (!geoChanged && !userInitiated) {
+      return;
+    }
 
     try {
-      renderMap(iss, `ISS nad krajem ${countryCode}`);
       await loadCountryDetails(countryCode, { userInitiated });
     } catch (error) {
       showCountryError(error.message || "Nie udało się pobrać informacji o kraju.");
       hideRadioCard();
     }
   } catch (error) {
+    if (error instanceof RateLimitError) {
+      increaseRefreshBackoff();
+      if (!isInitialLoad) {
+        return;
+      }
+    }
+
     showMapError(error.message || "Nie udało się pobrać danych mapy.");
     showIssError(error.message || "Nie udało się pobrać danych.");
     hideCountryCard();
     hideRadioCard();
   } finally {
     isRefreshing = false;
+    isInitialLoad = false;
     refreshBtn.disabled = false;
     scheduleNextRefresh();
   }
