@@ -27,6 +27,7 @@ function sortStationsByCodec(stations) {
   );
 }
 
+const musicBannerEl = document.querySelector(".music-banner");
 const mapCardEl = document.getElementById("map-card");
 const mapEl = document.getElementById("map");
 const mapStatusEl = document.getElementById("map-status");
@@ -58,6 +59,13 @@ let wtiaCoordsCache = null;
 let countryDetailsCache = new Map();
 let map = null;
 let issMarker = null;
+
+function setMusicBannerPlaying(isPlaying) {
+  if (!musicBannerEl) {
+    return;
+  }
+  musicBannerEl.classList.toggle("is-playing", isPlaying);
+}
 
 function setMapStatus(message) {
   mapStatusEl.textContent = message;
@@ -537,6 +545,7 @@ function stopRadio() {
   oceanFallbackCountryCodes = [];
   oceanFallbackCountryIndex = 0;
   radioContextLabel = null;
+  setMusicBannerPlaying(false);
 }
 
 async function tryNextOceanCountry() {
@@ -821,6 +830,13 @@ audioEl.preload = "none";
 audioEl.addEventListener("playing", () => {
   autoplayBlocked = false;
   updateAutoplayHint();
+  setMusicBannerPlaying(true);
+});
+audioEl.addEventListener("pause", () => {
+  setMusicBannerPlaying(false);
+});
+audioEl.addEventListener("ended", () => {
+  setMusicBannerPlaying(false);
 });
 
 refreshBtn.addEventListener("click", () => {
