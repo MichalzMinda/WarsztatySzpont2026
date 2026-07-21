@@ -1,6 +1,6 @@
 const ISS_SATELLITE_ID = 25544;
-const ISS_API = `https://api.wheretheiss.at/v1/satellites/${ISS_SATELLITE_ID}`;
-const WTIA_COORDS_API = "https://api.wheretheiss.at/v1/coordinates";
+const ISS_PROPAGATE_API = `https://tle.ivanstanojevic.me/api/tle/${ISS_SATELLITE_ID}/propagate`;
+const NOMINATIM_REVERSE_API = "https://nominatim.openstreetmap.org/reverse";
 const COUNTRIES_NOW_API = "https://countriesnow.space/api/v0.1/countries";
 const OPEN_METEO_GEO_API = "https://geocoding-api.open-meteo.com/v1/search";
 const OPEN_METEO_FORECAST_API = "https://api.open-meteo.com/v1/forecast";
@@ -10,7 +10,7 @@ const PLAYABLE_CODECS = new Set(["MP3", "AAC", "AAC+"]);
 const MAX_RADIO_ATTEMPTS = 3;
 const MAX_OCEAN_FALLBACK_COUNTRIES = 3;
 const OCEAN_NEAR_CACHE_MS = 45000;
-const WTIA_COORDS_CACHE_MS = 60000;
+const GEO_COUNTRY_CACHE_MS = 60000;
 const COUNTRY_DETAILS_CACHE_MS = 300000;
 const OCEAN_CODE = "??";
 const AUTO_REFRESH_MS = 5000;
@@ -55,7 +55,7 @@ let isRefreshing = false;
 let isInitialLoad = true;
 let lastGeoCountryCode = null;
 let lastOceanNearestKey = null;
-let wtiaCoordsCache = null;
+let geoCountryCache = null;
 let countryDetailsCache = new Map();
 let map = null;
 let issMarker = null;
@@ -167,17 +167,38 @@ function hideRadioCard() {
 }
 
 async function fetchIssPosition() {
-  const url = new URL(ISS_API);
-  url.searchParams.set("t", Date.now().toString());
-
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetch(ISS_PROPAGATE_API, { cache: "no-store" });
   if (response.status === 429) {
     throw new RateLimitError("ISS API zwróciło błąd 429 — zbyt wiele zapytań.");
   }
   if (!response.ok) {
     throw new Error(`ISS API zwróciło błąd ${response.status}`);
   }
-  return response.json();
+
+  const data = await response.json();
+  const latitude = data.geodetic?.latitude;
+  const longitude = data.geodetic?.longitude;
+  const altitude = data.geodetic?.altitude;
+  const velocityKms = data.vector?.velocity?.r;
+  if (
+    latitude == null ||
+    longitude == null ||
+    altitude == null ||
+    velocityKms == null
+  ) {
+    throw new Error("ISS API zwróciło niekompletne dane pozycji.");
+  }
+
+  const measuredAt = data.parameters?.date ? Date.parse(data.parameters.date) : NaN;
+  return {
+    latitude,
+    longitude,
+    altitude,
+    velocity: velocityKms * 3600,
+    timestamp: Number.isFinite(measuredAt)
+      ? Math.floor(measuredAt / 1000)
+      : Math.floor(Date.now() / 1000),
+  };
 }
 
 class RateLimitError extends Error {
@@ -188,40 +209,41 @@ class RateLimitError extends Error {
 }
 
 async function fetchCountryCode(latitude, longitude) {
-  const response = await fetch(`${WTIA_COORDS_API}/${latitude},${longitude}`);
+  const url = new URL(NOMINATIM_REVERSE_API);
+  url.searchParams.set("lat", latitude.toString());
+  url.searchParams.set("lon", longitude.toString());
+  url.searchParams.set("format", "json");
+
+  const response = await fetch(url);
   if (response.status === 429) {
-    throw new RateLimitError("WTIA coordinates zwróciło błąd 429 — zbyt wiele zapytań.");
+    throw new RateLimitError("Nominatim zwróciło błąd 429 — zbyt wiele zapytań.");
   }
   if (!response.ok) {
-    throw new Error(`WTIA coordinates zwróciło błąd ${response.status}`);
+    throw new Error(`Nominatim zwróciło błąd ${response.status}`);
   }
+
   const data = await response.json();
-  return data.country_code;
+  const countryCode = data.address?.country_code;
+  if (data.error || !countryCode) {
+    return OCEAN_CODE;
+  }
+  return countryCode.toUpperCase();
 }
 
 async function fetchCountryCodeCached(latitude, longitude) {
   const key = cacheKeyForCoords(latitude, longitude);
   const now = Date.now();
-  if (wtiaCoordsCache?.key === key && wtiaCoordsCache.expiresAt > now) {
-    return wtiaCoordsCache.countryCode;
+  if (geoCountryCache?.key === key && geoCountryCache.expiresAt > now) {
+    return geoCountryCache.countryCode;
   }
 
-  // WTIA allows ~1 req/s — pause after the ISS request before coordinates.
-  await delay(1100);
-
   const countryCode = await fetchCountryCode(latitude, longitude);
-  wtiaCoordsCache = { key, countryCode, expiresAt: now + WTIA_COORDS_CACHE_MS };
+  geoCountryCache = { key, countryCode, expiresAt: now + GEO_COUNTRY_CACHE_MS };
   return countryCode;
 }
 
 function cacheKeyForCoords(latitude, longitude) {
   return `${latitude.toFixed(1)},${longitude.toFixed(1)}`;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
 }
 
 async function fetchNearestCities(latitude, longitude) {
